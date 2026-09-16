@@ -3336,6 +3336,7 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
 
     PyObject *from;
     int last_step;
+    int submodule = 0;
     if (d->lz_attr != NULL) {
         if (PyUnicode_Check(d->lz_attr)) {
             from = PyUnicode_FromFormat("%U.%U", d->lz_from, d->lz_attr);
@@ -3343,6 +3344,7 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
                 return NULL;
             }
             last_step = 0;
+            submodule = d->lz_submodule;
         }
         else {
             from = Py_NewRef(d->lz_from);
@@ -3353,12 +3355,17 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
         Py_ssize_t len = PyUnicode_GET_LENGTH(d->lz_from);
         Py_ssize_t dot = PyUnicode_FindChar(d->lz_from, '.', 0, len, 1);
         if (dot >= 0) {
+            // A placeholder with no lz_attr and a dotted name comes from
+            // `import a.b as c`, where the name stands for a module.  The
+            // new placeholder records that, so that reification imports
+            // a.b instead of only reading b off a.
             from = PyUnicode_Substring(d->lz_from, 0, dot);
             if (from == NULL) {
                 return NULL;
             }
             last_step = PyUnicode_FindChar(
                 d->lz_from, '.', dot + 1, len, 1) == -1;
+            submodule = 1;
         }
         else {
             from = Py_NewRef(d->lz_from);
@@ -3367,7 +3374,10 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
     }
 
     PyObject *mod = NULL;
-    if (last_step) {
+    if (last_step && !submodule) {
+        // An attribute the base module already has is not necessarily the
+        // module that `import a.b as c` asks for, so that form is left to
+        // reification, which imports the whole name.
         mod = PyImport_GetModule(from);
     }
     if (mod != NULL) {
@@ -3391,7 +3401,7 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
         Py_DECREF(mod);
     }
 
-    ret = _PyLazyImport_New(frame, d->lz_builtins, from, name);
+    ret = _PyLazyImport_New(frame, d->lz_builtins, from, name, submodule);
     Py_DECREF(from);
     return ret;
 }

@@ -3981,6 +3981,30 @@ _PyImport_LoadLazyImportTstate(PyThreadState *tstate, PyObject *lazy_import)
         PyErr_SetString(PyExc_ImportError, "__import__ not found");
         goto error;
     }
+
+    if (lz->lz_submodule) {
+        // `import a.b as c` binds the module a.b, so the whole dotted name
+        // has to be imported the way the eager IMPORT_NAME imports it.  That
+        // import is what rejects a name whose parent is not a package, as in
+        // `import math.pi as x`.  The binding itself is then taken from the
+        // parent module below, like the eager IMPORT_FROM takes it.
+        assert(lz->lz_attr != NULL && PyUnicode_Check(lz->lz_attr));
+        PyObject *full = PyUnicode_FromFormat("%U.%U", lz->lz_from,
+                                              lz->lz_attr);
+        if (full == NULL) {
+            goto error;
+        }
+        PyObject *mod = _PyEval_ImportNameWithImport(
+            tstate, import_func, globals, globals,
+            full, Py_None, _PyLong_GetZero()
+        );
+        Py_DECREF(full);
+        if (mod == NULL) {
+            goto error;
+        }
+        Py_DECREF(mod);
+    }
+
     obj = _PyEval_ImportNameWithImport(
         tstate, import_func, globals, globals,
         lz->lz_from, fromlist, _PyLong_GetZero()
@@ -4600,7 +4624,7 @@ _PyImport_LazyImportModuleLevelObject(PyThreadState *tstate,
     else {
         Py_XINCREF(fromlist);
     }
-    PyObject *res = _PyLazyImport_New(frame, builtins, abs_name, fromlist);
+    PyObject *res = _PyLazyImport_New(frame, builtins, abs_name, fromlist, 0);
     if (res == NULL) {
         Py_XDECREF(fromlist);
         Py_DECREF(abs_name);

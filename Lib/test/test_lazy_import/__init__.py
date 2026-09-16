@@ -753,10 +753,16 @@ class ErrorHandlingTests(LazyImportTestCase):
         assert_python_ok("-c", code)
 
     def test_non_package_lazily_imported_as(self):
-        """Doing a dotted lazy import as still works"""
+        """A dotted lazy import as of a non-module name raises ModuleNotFoundError."""
         code = textwrap.dedent("""
             lazy import math.pi as pi
-            pi
+
+            try:
+                _ = pi
+            except ModuleNotFoundError:
+                pass
+            else:
+                raise AssertionError("ModuleNotFoundError was not raised")
         """)
         assert_python_ok("-c", code)
 
@@ -1739,7 +1745,6 @@ class MixedLazyEagerImportTests(LazyImportTestCase):
         self.assertEqual(result.returncode, 0, f"stdout: {result.stdout}, stderr: {result.stderr}")
         self.assertIn("OK", result.stdout)
 
-
     def test_eager_dotted_import_before_lazy_resolves_to_same_module(self):
         """Eager 'import a.b as c' before 'lazy import a.b as d' should bind the module."""
         # gh-157614: with a.b already imported, the lazy statement bound the
@@ -1755,6 +1760,64 @@ class MixedLazyEagerImportTests(LazyImportTestCase):
             assert lazy_c is c, lazy_c
         """)
         self._assert_subprocess_ok(code, files)
+
+
+@support.requires_subprocess()
+class ShadowedSubmoduleTests(LazyImportTestCase):
+    """Tests for 'import a.b as c' when a/__init__.py also defines b.
+
+    The eager statement imports the submodule a.b, and the import machinery
+    then rebinds b on the package a, so c is the module.  The lazy statement
+    has to bind the same object.  'from a import b' keeps taking the
+    attribute, which is what the eager from-import does.
+    """
+
+    FILES = {
+        "a/__init__.py": "b = 'attribute a.b, defined in a/__init__.py'\n",
+        "a/b.py": "VALUE = 'submodule a.b'\n",
+    }
+
+    def test_dotted_import_as_binds_shadowed_submodule(self):
+        """The submodule wins over a same-named attribute of the package."""
+        code = textwrap.dedent("""
+            import sys
+            import types
+
+            lazy import a.b as c
+
+            assert isinstance(c, types.ModuleType), type(c)
+            assert c.VALUE == 'submodule a.b', c.VALUE
+            assert 'a.b' in sys.modules
+
+            import a.b as eager_c
+            assert c is eager_c, (c, eager_c)
+        """)
+        self._assert_subprocess_ok(code, self.FILES)
+
+    def test_dotted_import_as_binds_submodule_with_package_first(self):
+        """Importing the package first does not bind the attribute."""
+        code = textwrap.dedent("""
+            import types
+
+            import a
+            lazy import a.b as c
+
+            assert isinstance(c, types.ModuleType), type(c)
+            assert a.b is c, a.b
+        """)
+        self._assert_subprocess_ok(code, self.FILES)
+
+    def test_lazy_from_import_binds_shadowing_attribute(self):
+        """A from-import still takes the attribute, as the eager one does."""
+        code = textwrap.dedent("""
+            import sys
+
+            lazy from a import b
+
+            assert b == 'attribute a.b, defined in a/__init__.py', b
+            assert 'a.b' not in sys.modules
+        """)
+        self._assert_subprocess_ok(code, self.FILES)
 
 
 class RelativeImportTests(LazyImportTestCase):
